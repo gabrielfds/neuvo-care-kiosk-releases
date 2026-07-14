@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build-windows:
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     steps:
       - name: Checkout
@@ -43,7 +43,7 @@ jobs:
 
       - name: Rebuild native modules for Electron
         shell: powershell
-        run: npx @electron/rebuild --parallel --msvs_version=2022
+        run: npx @electron/rebuild --parallel
 
       - name: Build & publish installer
         shell: powershell

@@ -53,40 +53,52 @@ async function readNtagPages(reader) {
 wss.on('connection', (socket) => {
   socket.send(JSON.stringify({ type: 'bridge_status', readerConnected, reader: readerName, timestamp: new Date().toISOString() }));
 });
-const nfc = new NFC();
-nfc.on('reader', (reader) => {
-  reader.autoProcessing = false;
-  readerConnected = true;
-  readerName = reader.reader.name;
-  console.log(`[neuvo-care-bridge] Reader connected: ${readerName}`);
-  broadcast({ type: 'bridge_status', readerConnected, reader: readerName, timestamp: new Date().toISOString() });
-  reader.on('card', async (card) => {
-    try {
-      const uid = card.uid || await getUid(reader) || toHex(card.atr);
-      const rawPayload = await readNtagPages(reader).catch(() => uid);
-      const payload = extractLikelyCode(rawPayload.match(/CARE-?\d{1,8}/i)?.[0] || rawPayload.match(/https?:\/\/\S+/i)?.[0] || uid);
-      if (shouldDebounce(uid, payload)) return;
-      broadcast({ type: 'nfc_read', payload, reader: readerName, uid, timestamp: new Date().toISOString() });
-    } catch (error) { console.error('[neuvo-care-bridge] Tag read error:', error); }
-  });
-  reader.on('end', () => {
-    readerConnected = false;
-    readerName = null;
-    broadcast({ type: 'bridge_status', readerConnected, reader: readerName, timestamp: new Date().toISOString() });
-  });
-});
-nfc.on('error', (error) => console.error('[neuvo-care-bridge] NFC subsystem error:', error));
+
+let nfc = null;
+function initNfc(logger) {
+  try {
+    nfc = new NFC();
+    nfc.on('reader', (reader) => {
+      reader.autoProcessing = false;
+      readerConnected = true;
+      readerName = reader.reader.name;
+      logger.info(`[neuvo-care-bridge] Reader connected: ${readerName}`);
+      broadcast({ type: 'bridge_status', readerConnected, reader: readerName, timestamp: new Date().toISOString() });
+      reader.on('card', async (card) => {
+        try {
+          const uid = card.uid || await getUid(reader) || toHex(card.atr);
+          const rawPayload = await readNtagPages(reader).catch(() => uid);
+          const payload = extractLikelyCode(rawPayload.match(/CARE-?\d{1,8}/i)?.[0] || rawPayload.match(/https?:\/\/\S+/i)?.[0] || uid);
+          if (shouldDebounce(uid, payload)) return;
+          broadcast({ type: 'nfc_read', payload, reader: readerName, uid, timestamp: new Date().toISOString() });
+        } catch (error) { logger.error('[neuvo-care-bridge] Tag read error:', error); }
+      });
+      reader.on('end', () => {
+        readerConnected = false;
+        readerName = null;
+        broadcast({ type: 'bridge_status', readerConnected, reader: readerName, timestamp: new Date().toISOString() });
+      });
+    });
+    nfc.on('error', (error) => logger.error('[neuvo-care-bridge] NFC subsystem error:', String(error)));
+  } catch (err) {
+    logger.error('[neuvo-care-bridge] Failed to initialize NFC (no reader or PC/SC service unavailable):', String(err));
+  }
+}
+
 function getBridgeState() { return { serverStarted: server.listening, readerConnected, readerName, clients: wss.clients.size, port: PORT }; }
 function startBridge(options = {}) {
   const logger = options.logger || console;
   const onStateChange = typeof options.onStateChange === 'function' ? options.onStateChange : () => {};
   return new Promise((resolve, reject) => {
     if (server.listening) return resolve({ server, wss, nfc });
+    // Initialize NFC after server starts to avoid blocking startup
     server.once('error', reject);
     server.listen(PORT, '127.0.0.1', () => {
       logger.info?.(`[neuvo-care-bridge] Service started at http://localhost:${PORT}`);
       onStateChange(getBridgeState());
       resolve({ server, wss, nfc });
+      // Delay NFC init slightly so 'started' IPC is sent first
+      setTimeout(() => initNfc(logger), 500);
     });
   });
 }

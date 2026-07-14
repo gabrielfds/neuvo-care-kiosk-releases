@@ -1,9 +1,8 @@
 const { contextBridge, ipcRenderer } = require('electron');
-const { version } = require('../package.json');
 
 contextBridge.exposeInMainWorld('__neuvoKiosk', {
   native: true,
-  version,
+  version: '0.4.0',
   platform: process.platform,
   saveConfig: (config) => ipcRenderer.invoke('kiosk:save-config', config),
   clearConfig: () => ipcRenderer.invoke('kiosk:clear-config'),

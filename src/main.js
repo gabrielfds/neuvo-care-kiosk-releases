@@ -1,4 +1,4 @@
-const { app, Menu, Tray, shell, BrowserWindow, nativeImage } = require('electron');
+const { app, Menu, Tray, shell, BrowserWindow, nativeImage, ipcMain } = require('electron');
 const { fork } = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
@@ -7,8 +7,30 @@ const AutoLaunch = require('auto-launch');
 const { autoUpdater } = require('electron-updater');
 
 const APP_NAME = 'Neuvo Care Kiosk';
-const KIOSK_URL = process.env.NEUVO_CARE_KIOSK_URL || 'https://appcare.neuvo.com.br/kiosk';
+const BASE_KIOSK_URL = 'https://appcare.neuvo.com.br/kiosk';
 const PORT = 8765;
+
+// --- Config persistence ---
+function getConfigPath() {
+  return path.join(app.getPath('userData'), 'kiosk-config.json');
+}
+function readConfig() {
+  try {
+    const raw = fs.readFileSync(getConfigPath(), 'utf8');
+    return JSON.parse(raw);
+  } catch { return null; }
+}
+function writeConfig(config) {
+  try { fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), 'utf8'); } catch {}
+}
+function clearConfig() {
+  try { fs.unlinkSync(getConfigPath()); } catch {}
+}
+function getKioskUrl() {
+  const cfg = readConfig();
+  if (cfg?.slug) return `https://${cfg.slug}.appcare.neuvo.com.br/kiosk`;
+  return process.env.NEUVO_CARE_KIOSK_URL || BASE_KIOSK_URL;
+}
 
 let tray = null;
 let kioskWindow = null;
@@ -71,7 +93,7 @@ function createKioskWindow() {
       nodeIntegration: false,
     },
   });
-  kioskWindow.loadURL(KIOSK_URL);
+  kioskWindow.loadURL(getKioskUrl());
   kioskWindow.webContents.on('did-fail-load', (_, errorCode) => {
     if (Math.abs(errorCode) === 3) return; // -3 = aborted/navigated away, ignore
     log.warn('Kiosk failed to load, retrying in 5s', { errorCode });
@@ -110,6 +132,13 @@ function rebuildMenu() {
       kioskWindow?.destroy();
       clearTimeout(kioskRestartTimer);
       setTimeout(createKioskWindow, 500);
+    }},
+    { label: 'Deslogar / Trocar clínica', click: () => {
+      clearConfig();
+      log.info('Config cleared — reloading kiosk to login screen');
+      if (kioskWindow && !kioskWindow.isDestroyed()) {
+        kioskWindow.loadURL(BASE_KIOSK_URL);
+      }
     }},
     { type: 'separator' },
     { label: 'Sair', click: () => {
@@ -205,6 +234,17 @@ async function setupAutoLaunch() {
     if (!(await launcher.isEnabled())) await launcher.enable();
   } catch (error) { log.warn('Auto-launch setup failed', error); }
 }
+
+// IPC handlers for config (called from preload/renderer)
+ipcMain.handle('kiosk:save-config', (_, config) => {
+  writeConfig(config);
+  log.info('Kiosk config saved', config);
+});
+ipcMain.handle('kiosk:clear-config', () => {
+  clearConfig();
+  log.info('Kiosk config cleared');
+});
+ipcMain.handle('kiosk:get-config', () => readConfig());
 
 if (gotSingleInstanceLock) {
   app.whenReady().then(async () => {

@@ -1,6 +1,6 @@
 {
   "name": "neuvo-care-kiosk",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Neuvo Care Kiosk — app nativo Windows com NFC e câmera",
   "main": "src/main.js",
   "private": true,

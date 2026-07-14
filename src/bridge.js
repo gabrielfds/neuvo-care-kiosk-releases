@@ -45,7 +45,11 @@ async function getUid(reader) {
 async function readNtagPages(reader) {
   const chunks = [];
   for (let page = 4; page < 40; page++) {
-    try { chunks.push(await reader.transmit(Buffer.from([0xff, 0xb0, 0x00, page, 0x04]), 40)); }
+    try {
+        const resp = await reader.transmit(Buffer.from([0xff, 0xb0, 0x00, page, 0x04]), 40);
+        // Strip 2-byte APDU status word (SW1 SW2) from each page response
+        chunks.push(resp.length > 2 ? resp.slice(0, resp.length - 2) : resp);
+      }
     catch { break; }
   }
   return Buffer.concat(chunks).toString('utf8').replace(/\0/g, ' ');

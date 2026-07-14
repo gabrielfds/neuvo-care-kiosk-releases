@@ -54,8 +54,52 @@ async function readNtagPages(reader) {
   }
   return Buffer.concat(chunks).toString('utf8').replace(/\0/g, ' ');
 }
+
+// NDEF URI record (well-known type 'U') wrapped in the standard TLV envelope,
+// padded to a 4-byte page boundary so it can be written page-by-page.
+const URI_PREFIXES = [
+  { code: 0x04, prefix: 'https://' },
+  { code: 0x03, prefix: 'http://' },
+  { code: 0x02, prefix: 'https://www.' },
+  { code: 0x01, prefix: 'http://www.' },
+];
+function buildNdefUriMessage(url) {
+  const match = URI_PREFIXES.find((p) => url.startsWith(p.prefix));
+  const code = match ? match.code : 0x00;
+  const rest = match ? url.slice(match.prefix.length) : url;
+  const payload = Buffer.concat([Buffer.from([code]), Buffer.from(rest, 'utf8')]);
+  const header = Buffer.from([0xd1, 0x01, payload.length, 0x55]); // MB+ME+SR, TNF=well-known, type='U'
+  const record = Buffer.concat([header, payload]);
+  const tlv = Buffer.concat([Buffer.from([0x03, record.length]), record, Buffer.from([0xfe])]);
+  const padLen = (4 - (tlv.length % 4)) % 4;
+  return Buffer.concat([tlv, Buffer.alloc(padLen, 0)]);
+}
+async function writeNtagPages(reader, data) {
+  for (let i = 0; i < data.length; i += 4) {
+    const page = 4 + i / 4;
+    const cmd = Buffer.concat([Buffer.from([0xff, 0xd6, 0x00, page, 0x04]), data.slice(i, i + 4)]);
+    const resp = await reader.transmit(cmd, 40);
+    const sw = resp.slice(-2);
+    if (sw[0] !== 0x90 || sw[1] !== 0x00) {
+      throw new Error(`write failed at page ${page} (SW=${sw.toString('hex').toUpperCase()})`);
+    }
+  }
+}
+
+// Set by the frontend (owner NFC-write screen) before tapping a tag —
+// consumed by the next 'card' event instead of a normal check-in read.
+let pendingWrite = null;
+
 wss.on('connection', (socket) => {
   socket.send(JSON.stringify({ type: 'bridge_status', readerConnected, reader: readerName, timestamp: new Date().toISOString() }));
+  socket.on('message', (raw) => {
+    try {
+      const msg = JSON.parse(raw);
+      if (msg.type === 'write_tag' && msg.url) {
+        pendingWrite = { requestId: msg.requestId, url: String(msg.url) };
+      }
+    } catch { /* malformado */ }
+  });
 });
 
 let nfc = null;
@@ -69,8 +113,23 @@ function initNfc(logger) {
       logger.info(`[neuvo-care-bridge] Reader connected: ${readerName}`);
       broadcast({ type: 'bridge_status', readerConnected, reader: readerName, timestamp: new Date().toISOString() });
       reader.on('card', async (card) => {
-        // Broadcast immediately so the web client can show visual feedback even before reading
         const ts = new Date().toISOString();
+
+        if (pendingWrite) {
+          const { requestId, url } = pendingWrite;
+          pendingWrite = null;
+          try {
+            await writeNtagPages(reader, buildNdefUriMessage(url));
+            logger.info(`[neuvo-care-bridge] Tag written: ${url}`);
+            broadcast({ type: 'write_result', requestId, ok: true, timestamp: ts });
+          } catch (error) {
+            logger.error('[neuvo-care-bridge] Tag write error:', error?.stack || String(error));
+            broadcast({ type: 'write_result', requestId, ok: false, error: error?.message || String(error), timestamp: ts });
+          }
+          return;
+        }
+
+        // Broadcast immediately so the web client can show visual feedback even before reading
         broadcast({ type: 'card_detected', reader: readerName, timestamp: ts });
         try {
           // uid is always a string — toHex(card.atr) is last resort

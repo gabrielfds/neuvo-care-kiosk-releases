@@ -84,7 +84,7 @@ function createKioskWindow() {
   if (kioskWindow && !kioskWindow.isDestroyed()) return;
   kioskWindow = new BrowserWindow({
     fullscreen: true,
-    kiosk: true,
+    kiosk: false,         // kiosk:true bloqueia Alt+F4 e task manager
     autoHideMenuBar: true,
     backgroundColor: '#0B0F1A',
     webPreferences: {
@@ -93,9 +93,26 @@ function createKioskWindow() {
       nodeIntegration: false,
     },
   });
-  kioskWindow.loadURL(getKioskUrl());
+
+  // Ctrl+Shift+Q = saída de administrador sem precisar da bandeja
+  kioskWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.control && input.shift && input.key === 'Q') {
+      event.preventDefault();
+      kioskWindow?.removeAllListeners('closed');
+      app.quit();
+    }
+  });
+
+  // Aguarda bridge subir antes de carregar (evita "não instalado" no banner)
+  const loadUrl = () => kioskWindow?.loadURL(getKioskUrl());
+  if (!bridgeState.serverStarted) {
+    setTimeout(loadUrl, 3000);
+  } else {
+    loadUrl();
+  }
+
   kioskWindow.webContents.on('did-fail-load', (_, errorCode) => {
-    if (Math.abs(errorCode) === 3) return; // -3 = aborted/navigated away, ignore
+    if (Math.abs(errorCode) === 3) return;
     log.warn('Kiosk failed to load, retrying in 5s', { errorCode });
     clearTimeout(kioskRestartTimer);
     kioskRestartTimer = setTimeout(() => {

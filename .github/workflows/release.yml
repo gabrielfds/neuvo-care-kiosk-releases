@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build-windows:
-    runs-on: windows-2022
+    runs-on: windows-latest
 
     steps:
       - name: Checkout
@@ -39,9 +39,11 @@ jobs:
 
       - name: Install dependencies
         shell: powershell
-        env:
-          GYP_MSVS_VERSION: 2022
-        run: npm install
+        run: npm install --msvs_version=2022
+
+      - name: Rebuild native modules for Electron
+        shell: powershell
+        run: npx @electron/rebuild --parallel --msvs_version=2022
 
       - name: Build & publish installer
         shell: powershell

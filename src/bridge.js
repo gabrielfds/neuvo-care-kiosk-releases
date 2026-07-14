@@ -65,13 +65,32 @@ function initNfc(logger) {
       logger.info(`[neuvo-care-bridge] Reader connected: ${readerName}`);
       broadcast({ type: 'bridge_status', readerConnected, reader: readerName, timestamp: new Date().toISOString() });
       reader.on('card', async (card) => {
+        // Broadcast immediately so the web client can show visual feedback even before reading
+        const ts = new Date().toISOString();
+        broadcast({ type: 'card_detected', reader: readerName, timestamp: ts });
         try {
-          const uid = card.uid || await getUid(reader) || toHex(card.atr);
-          const rawPayload = await readNtagPages(reader).catch(() => uid);
-          const payload = extractLikelyCode(rawPayload.match(/CARE-?\d{1,8}/i)?.[0] || rawPayload.match(/https?:\/\/\S+/i)?.[0] || uid);
-          if (shouldDebounce(uid, payload)) return;
-          broadcast({ type: 'nfc_read', payload, reader: readerName, uid, timestamp: new Date().toISOString() });
-        } catch (error) { logger.error('[neuvo-care-bridge] Tag read error:', error); }
+          // uid is always a string — toHex(card.atr) is last resort
+          const uid = card.uid || (await getUid(reader)) || toHex(card.atr) || 'unknown';
+          logger.info(`[neuvo-care-bridge] Card detected uid=${uid} atr=${toHex(card.atr)}`);
+
+          // Try manual APDU page read (NTAG213/215/216)
+          const rawPages = await readNtagPages(reader).catch((e) => {
+            logger.warn(`[neuvo-care-bridge] readNtagPages failed: ${e?.message || e}`);
+            return null;
+          });
+          const rawPayload = rawPages || uid;
+          logger.info(`[neuvo-care-bridge] rawPayload (first 120): ${String(rawPayload).slice(0, 120)}`);
+
+          const careMatch = String(rawPayload).match(/CARE-?\d{1,8}/i)?.[0];
+          const urlMatch  = !careMatch ? String(rawPayload).match(/https?:\/\/\S+/i)?.[0] : null;
+          const payload   = extractLikelyCode(careMatch || urlMatch || uid);
+          logger.info(`[neuvo-care-bridge] Extracted payload: ${payload}`);
+
+          if (shouldDebounce(uid, payload)) { logger.info('[neuvo-care-bridge] Debounced'); return; }
+          broadcast({ type: 'nfc_read', payload, reader: readerName, uid, timestamp: ts });
+        } catch (error) {
+          logger.error('[neuvo-care-bridge] Tag read error:', error?.stack || String(error));
+        }
       });
       reader.on('end', () => {
         readerConnected = false;
